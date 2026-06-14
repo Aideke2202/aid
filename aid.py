@@ -3,13 +3,15 @@ import os
 import json
 from google import genai
 from docx import Document
+from pypdf import PdfReader
+import pandas as pd
 import io
 
 # Настройка страницы
 st.set_page_config(page_title="База знаний и Диспетчер ИИ", page_icon="🧠", layout="wide")
 
 st.title("🧠 Интеллектуальная база знаний отдела (Gemini)")
-st.write("Загружайте должностные инструкции и мануалы к программам. ИИ поможет распределить задачи или найти решение ошибки.")
+st.write("Загружайте инструкции, мануалы и таблицы (Word, PDF, Excel). ИИ проанализирует базу и найдет решение или ответственного.")
 
 # Папки для хранения данных
 BASE_DIR = "knowledge_base"
@@ -48,20 +50,71 @@ def parse_docx(file_bytes):
     except Exception as e:
         return f"Ошибка при чтении файла Word: {e}"
 
+# --- ФУНКЦИЯ ДЛЯ ЧТЕНИЯ PDF (.pdf) ---
+def parse_pdf(file_bytes):
+    try:
+        reader = PdfReader(io.BytesIO(file_bytes))
+        full_text = []
+        for page in reader.pages:
+            text = page.extract_text()
+            if text:
+                full_text.append(text)
+        return "\n".join(full_text)
+    except Exception as e:
+        return f"Ошибка при чтении файла PDF: {e}"
+
+# --- ФУНКЦИЯ ДЛЯ ЧТЕНИЯ EXCEL (.xlsx, .xls) ---
+def parse_excel(file_bytes):
+    try:
+        # Читаем все листы книги Excel
+        excel_file = pd.ExcelFile(io.BytesIO(file_bytes))
+        full_text = []
+        
+        for sheet_name in excel_file.sheet_names:
+            df = pd.read_excel(excel_file, sheet_name=sheet_name)
+            # Заменяем пустые ячейки (NaN) на пустые строки
+            df = df.fillna("")
+            
+            if not df.empty:
+                full_text.append(f"--- Лист таблицы: {sheet_name} ---")
+                # Добавляем заголовки колонок
+                headers = " | ".join(df.columns.astype(str))
+                full_text.append(f"Колонки: {headers}")
+                
+                # Читаем каждую строку таблицы
+                for idx, row in df.iterrows():
+                    row_values = [str(val).strip() for val in row.values]
+                    full_text.append(f"Строка {idx+1}: " + " | ".join(row_values))
+                    
+        return "\n".join(full_text)
+    except Exception as e:
+        return f"Ошибка при чтении файла Excel: {e}"
+
 # --- БОКОВАЯ ПАНЕЛЬ: ЗАГРУЗКА И УДАЛЕНИЕ ---
 with st.sidebar:
     st.write("---")
-    st.header("📥 Загрузка инструкций")
+    st.header("📥 Загрузка инструкций и таблиц")
     
-    doc_type = st.selectbox("Тип документа:", ["Должностная инструкция", "Инструкция к программе / Ошибка"])
-    doc_title = st.text_input("Название (ФИО или имя программы):")
-    uploaded_file = st.file_uploader("Выложите файл инструкции (.docx):", type=["docx"])
+    doc_type = st.selectbox("Тип документа:", ["Должностная инструкция", "Инструкция к программе / Ошибка", "Таблица Excel / Реестр"])
+    doc_title = st.text_input("Название (ФИО, программа или имя таблицы):")
+    
+    # Теперь загрузчик принимает и Word, и PDF, и Excel!
+    uploaded_file = st.file_uploader("Выложите файл (.docx, .pdf, .xlsx):", type=["docx", "pdf", "xlsx"])
     
     save_btn = st.button("💾 Сохранить в базу знаний", type="secondary")
     
     if save_btn and doc_title and uploaded_file:
         file_bytes = uploaded_file.read()
-        parsed_text = parse_docx(file_bytes)
+        file_ext = uploaded_file.name.split(".")[-1].lower()
+        
+        if file_ext == "docx":
+            parsed_text = parse_docx(file_bytes)
+        elif file_ext == "pdf":
+            parsed_text = parse_pdf(file_bytes)
+        elif file_ext in ["xlsx", "xls"]:
+            parsed_text = parse_excel(file_bytes)
+        else:
+            parsed_text = "Неподдерживаемый формат файла."
         
         if "Ошибка при чтении" in parsed_text:
             st.error(parsed_text)
@@ -78,9 +131,9 @@ with st.sidebar:
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=4)
             st.success(f"Документ '{doc_title}' успешно добавлен!")
-            st.rerun() # Перезагружаем страницу, чтобы документ сразу появился в списке
+            st.rerun()
 
-    # --- СЕКЦИЯ УДАЛЕНИЯ ИНСТРУКЦИЙ ---
+    # --- СЕКЦИЯ УДАЛЕНИЯ ---
     st.write("---")
     st.subheader("📚 Список документов в базе:")
     if os.path.exists(DOCS_DIR):
@@ -91,30 +144,34 @@ with st.sidebar:
                 with open(filepath, "r", encoding="utf-8") as f:
                     meta = json.load(f)
                 
-                icon = "👤" if meta["type"] == "Должностная инструкция" else "💻"
+                if meta["type"] == "Должностная инструкция":
+                    icon = "👤"
+                elif meta["type"] == "Таблица Excel / Реестр":
+                    icon = "📊"
+                else:
+                    icon = "💻"
                 
-                # Создаем аккуратную строчку: иконка + название и маленькая кнопка удаления
                 col1, col2 = st.columns([4, 1])
                 with col1:
                     st.write(f"{icon} **{meta['title']}**")
                 with col2:
-                    # Кнопка удаления для каждого файла
                     if st.button("🗑️", key=file, help=f"Удалить {meta['title']}"):
                         os.remove(filepath)
                         st.success("Удалено!")
-                        st.rerun() # Перезагружаем, чтобы список мгновенно обновился
+                        st.rerun()
         else:
-            st.info("База знаний пуста. Загрузите файлы .docx")
+            st.info("База знаний пуста. Загрузите файлы .docx, .pdf или .xlsx")
 
 # --- ГЛАВНАЯ СТРАНИЦА: ПОИСК И АНАЛИЗ ---
-st.subheader("📝 Опишите проблему, ошибку или входящую задачу")
-user_query = st.text_area("Вставьте текст (например: 'Выскочила ошибка базы данных Lotus Notes...' или текстовку поручения):", height=150)
+st.subheader("📝 Запрос к ИИ (Поручение, Ошибка или поиск в Таблице)")
+user_query = st.text_area("Вставьте текст задачи, описание технического сбоя или вопрос по таблице Excel:", height=150,
+                         placeholder="Пример: 'Кто согласно таблице графика дежурит в эту субботу?' или 'Найди по реестру, за кем закреплен проект АВР'")
 
-if st.button("🔍 Найти решение или ответственного", type="primary"):
+if st.button("🔍 Запустить анализ базы знаний", type="primary"):
     if not api_key or client is None:
         st.error("Ошибка: Не указан или неверен API-ключ Gemini!")
     elif not user_query.strip():
-        st.warning("Пожалуйста, введите текст запроса или описание ошибки.")
+        st.warning("Пожалуйста, введите текст запроса.")
     else:
         all_docs_context = ""
         if os.path.exists(DOCS_DIR):
@@ -122,34 +179,33 @@ if st.button("🔍 Найти решение или ответственного
             for idx, file in enumerate(files, 1):
                 with open(os.path.join(DOCS_DIR, file), "r", encoding="utf-8") as f:
                     meta = json.load(f)
-                    all_docs_context += f"--- ДОКУМЕНТ №{idx} ---\nТип: {meta['type']}\nНазвание/Объект: {meta['title']}\nСодержимое инструкции:\n{meta['content']}\n\n"
+                    all_docs_context += f"--- ДОКУМЕНТ №{idx} ---\nТип: {meta['type']}\nНазвание: {meta['title']}\nСодержимое:\n{meta['content']}\n\n"
         
         if not all_docs_context:
-            st.error("Ошибка: База знаний пуста! Пожалуйста, сначала загрузите файлы инструкций в левой панели.")
+            st.error("Ошибка: База знаний пуста! Пожалуйста, загрузите файлы в левой панели.")
         else:
-            with st.spinner("Gemini изучает инструкции и ищет решение..."):
+            with st.spinner("Gemini штудирует базу данных и таблицы..."):
                 try:
                     system_instruction = (
-                        "Ты — интеллектуальный корпоративный помощник, эксперт по должностным инструкциям "
-                        "и технической поддержке программного обеспечения. Твоя задача — проанализировать запрос "
-                        "пользователя (это может быть описание технической ошибки в программе или рабочее поручение) "
-                        "и строго на основании предоставленных документов вынести вердикт.\n\n"
-                        "1. Если пользователь описал ОШИБКУ/ПРОБЛЕМУ в программе: найди в инструкциях по программам "
-                        "подходящий алгоритм решения, распиши пошагово, что делать, и укажи, к какому документу ты обращался.\n"
-                        "2. Если пользователь ввёл ПОРУЧЕНИЕ/ЗАДАЧУ: на основе должностных инструкций определи, "
-                        "кто из сотрудников или какой отдел должен этим заниматься, аргументируя выводы обязанностями.\n"
-                        "Если в базе нет ответа или подходящего сотрудника, вежливо сообщи об этом."
+                        "Ты — суперинтеллектуальный аналитик и корпоративный помощник. В твоем распоряжении база знаний, "
+                        "состоящая из текстовых инструкций (Word/PDF) и структурированных таблиц (Excel).\n\n"
+                        "Твоя задача — внимательно изучить предоставленный контекст и ответить на запрос пользователя:\n"
+                        "1. Если вопрос касается ТАБЛИЦЫ/РЕЕСТРА (Excel): найди нужные строки, сопоставь данные и выдай точный "
+                        "аналитический ответ (например, кто дежурит, за кем закреплена задача, какой статус у документа).\n"
+                        "2. Если это ТЕХНИЧЕСКАЯ ОШИБКА: найди в мануалах пошаговый алгоритм исправления.\n"
+                        "3. Если это ПОРУЧЕНИЕ: определи исполнителя по должностным инструкциям.\n\n"
+                        "Отвечай строго по делу, опираясь только на факты из загруженных документов."
                     )
                     
-                    full_prompt = f"""Вот полная база загруженных документов и инструкций вашего отдела:
+                    full_prompt = f"""Вот полная база загруженных документов, инструкций и таблиц вашего отдела:
 {all_docs_context}
 
 ---
-ЗАПРОС ПОЛЬЗОВАТЕЛЯ (Текстовка / Ошибка):
+ЗАПРОС ПОЛЬЗОВАТЕЛЯ:
 "{user_query}"
 ---
 
-На основе документов выше дай точный технический ответ или назначь ответственного. Обоснуй решение ссылками на текст инструкций.
+Используя данные выше, сформируй точный ответ. Если информация взята из таблицы Excel, укажи строку или лист.
 """
                     
                     response = client.models.generate_content(
