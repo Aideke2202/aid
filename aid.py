@@ -66,4 +66,101 @@ with st.sidebar:
         if "Ошибка при чтении" in parsed_text:
             st.error(parsed_text)
         else:
-            filename = f"{doc_type.replace(' ', '_
+            filename = f"{doc_type.replace(' ', '_')}_{doc_title.replace(' ', '_')}.json"
+            filepath = os.path.join(DOCS_DIR, filename)
+            
+            data = {
+                "type": doc_type,
+                "title": doc_title,
+                "content": parsed_text
+            }
+            
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
+            st.success(f"Документ '{doc_title}' успешно добавлен!")
+            st.rerun() # Перезагружаем страницу, чтобы документ сразу появился в списке
+
+    # --- СЕКЦИЯ УДАЛЕНИЯ ИНСТРУКЦИЙ ---
+    st.write("---")
+    st.subheader("📚 Список документов в базе:")
+    if os.path.exists(DOCS_DIR):
+        files = [f for f in os.listdir(DOCS_DIR) if f.endswith('.json')]
+        if files:
+            for file in files:
+                filepath = os.path.join(DOCS_DIR, file)
+                with open(filepath, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                
+                icon = "👤" if meta["type"] == "Должностная инструкция" else "💻"
+                
+                # Создаем аккуратную строчку: иконка + название и маленькая кнопка удаления
+                col1, col2 = st.columns([4, 1])
+                with col1:
+                    st.write(f"{icon} **{meta['title']}**")
+                with col2:
+                    # Кнопка удаления для каждого файла
+                    if st.button("🗑️", key=file, help=f"Удалить {meta['title']}"):
+                        os.remove(filepath)
+                        st.success("Удалено!")
+                        st.rerun() # Перезагружаем, чтобы список мгновенно обновился
+        else:
+            st.info("База знаний пуста. Загрузите файлы .docx")
+
+# --- ГЛАВНАЯ СТРАНИЦА: ПОИСК И АНАЛИЗ ---
+st.subheader("📝 Опишите проблему, ошибку или входящую задачу")
+user_query = st.text_area("Вставьте текст (например: 'Выскочила ошибка базы данных Lotus Notes...' или текстовку поручения):", height=150)
+
+if st.button("🔍 Найти решение или ответственного", type="primary"):
+    if not api_key or client is None:
+        st.error("Ошибка: Не указан или неверен API-ключ Gemini!")
+    elif not user_query.strip():
+        st.warning("Пожалуйста, введите текст запроса или описание ошибки.")
+    else:
+        all_docs_context = ""
+        if os.path.exists(DOCS_DIR):
+            files = [f for f in os.listdir(DOCS_DIR) if f.endswith('.json')]
+            for idx, file in enumerate(files, 1):
+                with open(os.path.join(DOCS_DIR, file), "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                    all_docs_context += f"--- ДОКУМЕНТ №{idx} ---\nТип: {meta['type']}\nНазвание/Объект: {meta['title']}\nСодержимое инструкции:\n{meta['content']}\n\n"
+        
+        if not all_docs_context:
+            st.error("Ошибка: База знаний пуста! Пожалуйста, сначала загрузите файлы инструкций в левой панели.")
+        else:
+            with st.spinner("Gemini изучает инструкции и ищет решение..."):
+                try:
+                    system_instruction = (
+                        "Ты — интеллектуальный корпоративный помощник, эксперт по должностным инструкциям "
+                        "и технической поддержке программного обеспечения. Твоя задача — проанализировать запрос "
+                        "пользователя (это может быть описание технической ошибки в программе или рабочее поручение) "
+                        "и строго на основании предоставленных документов вынести вердикт.\n\n"
+                        "1. Если пользователь описал ОШИБКУ/ПРОБЛЕМУ в программе: найди в инструкциях по программам "
+                        "подходящий алгоритм решения, распиши пошагово, что делать, и укажи, к какому документу ты обращался.\n"
+                        "2. Если пользователь ввёл ПОРУЧЕНИЕ/ЗАДАЧУ: на основе должностных инструкций определи, "
+                        "кто из сотрудников или какой отдел должен этим заниматься, аргументируя выводы обязанностями.\n"
+                        "Если в базе нет ответа или подходящего сотрудника, вежливо сообщи об этом."
+                    )
+                    
+                    full_prompt = f"""Вот полная база загруженных документов и инструкций вашего отдела:
+{all_docs_context}
+
+---
+ЗАПРОС ПОЛЬЗОВАТЕЛЯ (Текстовка / Ошибка):
+"{user_query}"
+---
+
+На основе документов выше дай точный технический ответ или назначь ответственного. Обоснуй решение ссылками на текст инструкций.
+"""
+                    
+                    response = client.models.generate_content(
+                        model='gemini-2.5-flash',
+                        contents=full_prompt,
+                        config={"system_instruction": system_instruction, "temperature": 0.2}
+                    )
+                    
+                    st.success("🤖 Ответ сформирован!")
+                    st.subheader("🎯 Результат анализа:")
+                    st.markdown(response.text)
+                    
+                except Exception as e:
+                    st.error(f"Произошла ошибка при вызове Gemini: {e}")
