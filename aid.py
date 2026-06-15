@@ -13,12 +13,10 @@ st.set_page_config(page_title="База знаний и Диспетчер ИИ"
 st.title("🧠 Интеллектуальная база знаний отдела (Gemini)")
 st.write("Загружайте инструкции, мануалы и таблицы (Word, PDF, Excel). ИИ проанализирует базу и найдет решение или ответственного.")
 
-# Папки для хранения данных
+# --- ГАРАНТИРОВАННОЕ СОЗДАНИЕ ПАПОК ---
 BASE_DIR = "knowledge_base"
 DOCS_DIR = os.path.join(BASE_DIR, "documents")
-for folder in [BASE_DIR, DOCS_DIR]:
-    if not os.path.exists(folder):
-        os.makedirs(folder)
+os.makedirs(DOCS_DIR, exist_ok=True)
 
 # --- ИНИЦИАЛИЗАЦИЯ GEMINI ---
 st.sidebar.header("🔑 Настройки ИИ")
@@ -29,11 +27,12 @@ if api_key:
     try:
         client = genai.Client(api_key=api_key)
     except Exception as e:
-        st.sidebar.error(f"Ошибка инициализации ИИ: {e}")
+        st.sidebar.error(f"Ошибка初始化 ИИ: {e}")
 else:
     st.sidebar.warning("🔑 Пожалуйста, введите API ключ для работы системы.")
 
-# --- ФУНКЦИЯ ДЛЯ ЧТЕНИЯ WORD (.docx) ---
+# --- ФУНКЦИИ ДЛЯ ЧТЕНИЯ ФОРМАТОВ ---
+
 def parse_docx(file_bytes):
     try:
         doc = Document(io.BytesIO(file_bytes))
@@ -50,7 +49,6 @@ def parse_docx(file_bytes):
     except Exception as e:
         return f"Ошибка при чтении файла Word: {e}"
 
-# --- ФУНКЦИЯ ДЛЯ ЧТЕНИЯ PDF (.pdf) ---
 def parse_pdf(file_bytes):
     try:
         reader = PdfReader(io.BytesIO(file_bytes))
@@ -63,29 +61,20 @@ def parse_pdf(file_bytes):
     except Exception as e:
         return f"Ошибка при чтении файла PDF: {e}"
 
-# --- ФУНКЦИЯ ДЛЯ ЧТЕНИЯ EXCEL (.xlsx, .xls) ---
 def parse_excel(file_bytes):
     try:
-        # Читаем все листы книги Excel
         excel_file = pd.ExcelFile(io.BytesIO(file_bytes))
         full_text = []
-        
         for sheet_name in excel_file.sheet_names:
             df = pd.read_excel(excel_file, sheet_name=sheet_name)
-            # Заменяем пустые ячейки (NaN) на пустые строки
             df = df.fillna("")
-            
             if not df.empty:
                 full_text.append(f"--- Лист таблицы: {sheet_name} ---")
-                # Добавляем заголовки колонок
                 headers = " | ".join(df.columns.astype(str))
                 full_text.append(f"Колонки: {headers}")
-                
-                # Читаем каждую строку таблицы
                 for idx, row in df.iterrows():
                     row_values = [str(val).strip() for val in row.values]
                     full_text.append(f"Строка {idx+1}: " + " | ".join(row_values))
-                    
         return "\n".join(full_text)
     except Exception as e:
         return f"Ошибка при чтении файла Excel: {e}"
@@ -97,8 +86,6 @@ with st.sidebar:
     
     doc_type = st.selectbox("Тип документа:", ["Должностная инструкция", "Инструкция к программе / Ошибка", "Таблица Excel / Реестр"])
     doc_title = st.text_input("Название (ФИО, программа или имя таблицы):")
-    
-    # Теперь загрузчик принимает и Word, и PDF, и Excel!
     uploaded_file = st.file_uploader("Выложите файл (.docx, .pdf, .xlsx):", type=["docx", "pdf", "xlsx"])
     
     save_btn = st.button("💾 Сохранить в базу знаний", type="secondary")
@@ -133,7 +120,7 @@ with st.sidebar:
             st.success(f"Документ '{doc_title}' успешно добавлен!")
             st.rerun()
 
-    # --- СЕКЦИЯ УДАЛЕНИЯ ---
+    # --- СЕКЦИЯ УДАЛЕНИЯ ДОКУМЕНТОВ ---
     st.write("---")
     st.subheader("📚 Список документов в базе:")
     if os.path.exists(DOCS_DIR):
@@ -160,9 +147,9 @@ with st.sidebar:
                         st.success("Удалено!")
                         st.rerun()
         else:
-            st.info("База знаний пуста. Загрузите файлы .docx, .pdf или .xlsx")
+            st.info("База знаний пуста. Загрузите файлы.")
 
-# --- ГЛАВНАЯ СТРАНИЦА: ПОИСК И АНАЛИЗ ---
+# --- ГЛАВНАЯ СТРАНИЦА: ЗАПРОСЫ, ОШИБКИ И АНАЛИЗ ---
 st.subheader("📝 Запрос к ИИ (Поручение, Ошибка или поиск в Таблице)")
 user_query = st.text_area("Вставьте текст задачи, описание технического сбоя или вопрос по таблице Excel:", height=150,
                          placeholder="Пример: 'Кто согласно таблице графика дежурит в эту субботу?' или 'Найди по реестру, за кем закреплен проект АВР'")
@@ -184,7 +171,7 @@ if st.button("🔍 Запустить анализ базы знаний", type=
         if not all_docs_context:
             st.error("Ошибка: База знаний пуста! Пожалуйста, загрузите файлы в левой панели.")
         else:
-            with st.spinner("Gemini штудирует базу данных и таблицы..."):
+            with st.spinner("Gemini штудирует базу данных, мануалы и таблицы..."):
                 try:
                     system_instruction = (
                         "Ты — суперинтеллектуальный аналитик и корпоративный помощник. В твоем распоряжении база знаний, "
@@ -194,7 +181,7 @@ if st.button("🔍 Запустить анализ базы знаний", type=
                         "аналитический ответ (например, кто дежурит, за кем закреплена задача, какой статус у документа).\n"
                         "2. Если это ТЕХНИЧЕСКАЯ ОШИБКА: найди в мануалах пошаговый алгоритм исправления.\n"
                         "3. Если это ПОРУЧЕНИЕ: определи исполнителя по должностным инструкциям.\n\n"
-                        "Отвечай строго по делу, опираясь только на факты из загруженных документов."
+                        "Отвечай строго по делу, опираясь только на факты из загруженных документов. Будь точен и лаконичен."
                     )
                     
                     full_prompt = f"""Вот полная база загруженных документов, инструкций и таблиц вашего отдела:
@@ -205,7 +192,7 @@ if st.button("🔍 Запустить анализ базы знаний", type=
 "{user_query}"
 ---
 
-Используя данные выше, сформируй точный ответ. Если информация взята из таблицы Excel, укажи строку или лист.
+Используя данные выше, сформируй точный ответ. Если информация взята из таблицы Excel, укажи конкретные строки или листы.
 """
                     
                     response = client.models.generate_content(
