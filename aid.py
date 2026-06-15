@@ -17,8 +17,8 @@ if sys.stdout.encoding != 'utf-8':
 # Настройка страницы
 st.set_page_config(page_title="База знаний и Диспетчер ИИ", page_icon="🧠", layout="wide")
 
-st.title("🧠 Интеллектуальная база знаний отдела (Gemini)")
-st.write("Загружайте инструкции, мануалы и таблицы (Word, PDF, Excel). ИИ проанализирует базу и найдет решение или ответственного.")
+st.title("🧠 Интеллектуальная база знаний и Диспетчер СЗ")
+st.write("Система анализа мануалов, таблиц Excel и автоматического распределения служебных записок по должностным инструкциям.")
 
 # --- ГАРАНТИРОВАННОЕ СОЗДАНИЕ ПАПОК ---
 BASE_DIR = "knowledge_base"
@@ -65,7 +65,6 @@ def parse_pdf(file_bytes):
     try:
         reader = PdfReader(io.BytesIO(file_bytes))
         full_text = []
-        # Точная разметка страниц для ИИ
         for idx, page in enumerate(reader.pages, 1):
             text = page.extract_text()
             if text:
@@ -76,18 +75,22 @@ def parse_pdf(file_bytes):
 
 def parse_excel(file_bytes):
     try:
-        excel_file = pd.ExcelFile(io.BytesIO(file_bytes))
+        excel_file = pd.ExcelFile(io.BytesIO(file_bytes), engine='openpyxl')
         full_text = []
         for sheet_name in excel_file.sheet_names:
-            # header=None исключает сдвиги, строки считаются честно с самого верха файла
-            df = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
+            df = pd.read_excel(excel_file, sheet_name=sheet_name, header=None, engine='openpyxl')
             df = df.fillna("")
             if not df.empty:
                 full_text.append(f"--- Лист таблицы: {sheet_name} ---")
                 for idx, row in df.iterrows():
-                    row_values = [str(val).strip() for val in row.values]
-                    # idx + 1 возвращает физический номер строки, как на панели в самом Excel
-                    full_text.append(f"Строка Excel {idx+1}: " + " | ".join(row_values))
+                    row_values = []
+                    for val in row.values:
+                        val_str = str(val).strip()
+                        if val_str in ["NaN", "NaT", "<NA>"]:
+                            val_str = ""
+                        row_values.append(val_str)
+                    if any(row_values):
+                        full_text.append(f"Строка Excel {idx+1}: " + " | ".join(row_values))
         return "\n".join(full_text)
     except Exception as e:
         return f"Ошибка при чтении файла Excel: {e}"
@@ -119,7 +122,6 @@ with st.sidebar:
         if "Ошибка при чтении" in parsed_text:
             st.error(parsed_text)
         else:
-            # ЗАЩИТА ОТ FILE NOT FOUND: Очищаем название от знаков вроде / \ : ? которые ломают пути Linux
             clean_title = "".join(c for c in doc_title if c.isalnum() or c in "._- ")
             clean_type = doc_type.replace(' ', '_')
             
@@ -132,7 +134,6 @@ with st.sidebar:
                 "content": parsed_text
             }
             
-            # Принудительно создаем структуру папок перед самой записью
             os.makedirs(DOCS_DIR, exist_ok=True)
             
             with open(filepath, "w", encoding="utf-8") as f:
@@ -169,76 +170,110 @@ with st.sidebar:
         else:
             st.info("База знаний пуста. Загрузите файлы.")
 
-# --- ГЛАВНАЯ СТРАНИЦА: ЗАПРОСЫ, ОШИБКИ И АНАЛИЗ ---
-st.subheader("📝 Запрос к ИИ (Поручение, Ошибка или поиск в Таблице)")
-user_query = st.text_area("Вставьте текст задачи, описание технического сбоя или вопрос по таблице Excel:", height=150,
-                         placeholder="Пример: 'Кто согласно таблице графика дежурит в эту субботу?' или 'Найди по реестру, за кем закреплен проект АВР'")
+# --- ГЛАВНАЯ СТРАНИЦА: ПЕРЕКЛЮЧЕНИЕ ВКЛАДОК ---
+tab1, tab2 = st.tabs(["📝 Общий поиск и Анализ", "🎯 Диспетчер Служебных Записок (СЗ)"])
 
-if st.button("🔍 Запустить анализ базы знаний", type="primary"):
-    if not api_key.strip() or client is None:
-        st.error("Ошибка: Пожалуйста, сначала введите действующий API-ключ Gemini в левой панели!")
-    elif not user_query.strip():
-        st.warning("Пожалуйста, введите текст запроса.")
-    else:
-        all_docs_context = ""
-        if os.path.exists(DOCS_DIR):
-            files = [f for f in os.listdir(DOCS_DIR) if f.endswith('.json')]
-            for file in files:
-                with open(os.path.join(DOCS_DIR, file), "r", encoding="utf-8") as f:
-                    meta = json.load(f)
-                    # Чистый контекст без лишней нумерации, путающей ИИ
-                    all_docs_context += f"--- НАЧАЛО ДОКУМЕНТА: {meta['title']} ({meta['type']}) ---\n{meta['content']}\n--- КОНЕЦ ДОКУМЕНТА ---\n\n"
-        
-        if not all_docs_context:
-            st.error("Ошибка: База знаний пуста! Пожалуйста, сначала загрузите файлы в левой панели.")
+# --- ВКЛАДКА 1: ОБЩИЙ ПОИСК ---
+with tab1:
+    st.subheader("Поиск в базе знаний и таблицах")
+    user_query = st.text_area("Вставьте ваш вопрос по таблицам Excel или техническим мануалам:", height=120, key="query_main")
+    
+    if st.button("🔍 Запустить анализ", type="primary", key="btn_main"):
+        if not api_key.strip() or client is None:
+            st.error("Ошибка: Пожалуйста, сначала введите действующий API-ключ Gemini в левой панели!")
+        elif not user_query.strip():
+            st.warning("Пожалуйста, введите текст запроса.")
         else:
-            with st.spinner("Gemini штудирует базу данных, мануалы и таблицы..."):
-                try:
-                    # Инструкции на английском защищают ASCII заголовки библиотеки от падения
-                    system_instruction = (
-                        "You are an AI assistant for corporate knowledge base analysis. "
-                        "Analyze the user's request using the provided context (memos, user manuals, Excel tables). "
-                        "Provide answers in Russian language based strictly on the provided documents. "
-                        "When referencing Excel tables, use the exact row numbers provided in the text (e.g., 'Строка Excel X'). "
-                        "When referencing PDF files, use the exact page numbers tags provided (e.g., '[Страница X]'). "
-                        "Do not add or subtract any numbers. Be extremely precise and concise."
-                    )
-                    
-                    full_prompt = f"""Here is the corporate database:
-{all_docs_context}
+            all_docs_context = ""
+            if os.path.exists(DOCS_DIR):
+                files = [f for f in os.listdir(DOCS_DIR) if f.endswith('.json')]
+                for file in files:
+                    with open(os.path.join(DOCS_DIR, file), "r", encoding="utf-8") as f:
+                        meta = json.load(f)
+                        all_docs_context += f"--- НАЧАЛО ДОКУМЕНТА: {meta['title']} ({meta['type']}) ---\n{meta['content']}\n--- КОНЕЦ ДОКУМЕНТА ---\n\n"
+            
+            if not all_docs_context:
+                st.error("Ошибка: База знаний пуста! Загрузите файлы слева.")
+            else:
+                with st.spinner("Анализирую базу данных..."):
+                    try:
+                        system_instruction = (
+                            "You are an AI assistant for corporate knowledge base analysis. "
+                            "Analyze the user's request using the provided context. Provide answers in Russian."
+                        )
+                        full_prompt = f"Context:\n{all_docs_context}\n\nUser Request:\n{user_query}"
+                        
+                        response = client.models.generate_content(
+                            model='gemini-2.5-flash',
+                            contents=full_prompt,
+                            config={"system_instruction": system_instruction, "temperature": 0.1}
+                        )
+                        st.success("🤖 Ответ сформирован!")
+                        st.markdown(response.text)
+                    except Exception as e:
+                        st.error(f"Ошибка при вызове Gemini: {e}")
+
+# --- ВКЛАДКА 2: АВТОМАТИЧЕСКИЙ ДИСПЕТЧЕР СЗ ---
+with tab2:
+    st.subheader("🤖 Распределение СЗ по должностным инструкциям")
+    st.write("Вставьте текст входящей служебной записки. ИИ сопоставит её суть с загруженными должностными инструкциями сотрудников и определит исполнителя.")
+    
+    sz_text = st.text_area("Текст служебной записки (СЗ):", height=200, placeholder="Пример: 'Необходимо провести дефектовку оборудования на узле связи и составить акт списания...'")
+    
+    if st.button("🎯 Определить ответственного сотрудника", type="primary", key="btn_sz"):
+        if not api_key.strip() or client is None:
+            st.error("Ошибка: Пожалуйста, сначала введите действующий API-ключ Gemini в левой панели!")
+        elif not sz_text.strip():
+            st.warning("Пожалуйста, вставьте текст служебной записки.")
+        else:
+            # Собираем строго должностные инструкции
+            di_context = ""
+            if os.path.exists(DOCS_DIR):
+                files = [f for f in os.listdir(DOCS_DIR) if f.endswith('.json')]
+                for file in files:
+                    with open(os.path.join(DOCS_DIR, file), "r", encoding="utf-8") as f:
+                        meta = json.load(f)
+                        if meta["type"] == "Должностная инструкция":
+                            di_context += f"--- ДОЛЖНОСТНАЯ ИНСТРУКЦИЯ СОТРУДНИКА: {meta['title']} ---\n{meta['content']}\n\n"
+            
+            if not di_context:
+                st.error("Ошибка: В базе знаний нет ни одной Должностной инструкции! Пожалуйста, загрузите ДИ сотрудников в левой панели (выбрав тип 'Должностная инструкция').")
+            else:
+                with st.spinner("Джамиля сопоставляет СЗ с должностными инструкциями..."):
+                    try:
+                        # Жесткая инструкция для ИИ выступать в роли диспетчера
+                        sz_system_instruction = (
+                            "You are an automated corporate task dispatcher. "
+                            "Your job is to read an incoming service note (СЗ) and compare it with the provided job descriptions (Должностные инструкции). "
+                            "Determine which employee is responsible for the task described in the СЗ. "
+                            "Provide your response in Russian. Structure it like this:\n"
+                            "1. Clearly state the name/title of the responsible employee.\n"
+                            "2. Quote the exact lines from their job description that justify your choice.\n"
+                            "3. Give a brief, clear explanation why this task belongs to them.\n"
+                            "Be objective and strict. If no matching employee is found, state that clearly."
+                        )
+                        
+                        sz_prompt = f"""Вот список должностных инструкций сотрудников отдела:
+{di_context}
 
 ---
-USER REQUEST:
-"{user_query}"
+ТЕКСТ ВХОДЯЩЕЙ СЛУЖЕБНОЙ ЗАПИСКИ (СЗ):
+"{sz_text}"
 ---
 
-Provide a detailed, helpful answer in RUSSIAN language based ONLY on the data above.
+На основе должностных инструкций определи, кому распределить эту служебную записку. Дай развернутый ответ на русском языке.
 """
-                    # Принудительное кодирование строки в UTF-8 для защиты от ошибок кодировки
-                    full_prompt_clean = str(full_prompt).encode('utf-8', errors='ignore').decode('utf-8')
-                    
-                    response = client.models.generate_content(
-                        model='gemini-2.5-flash',
-                        contents=full_prompt_clean,
-                        config={
-                            "system_instruction": system_instruction, 
-                            "temperature": 0.1  # Низкая температура для максимальной точности без фантазий
-                        }
-                    )
-                    
-                    st.success("🤖 Ответ сформирован!")
-                    st.subheader("🎯 Результат анализа:")
-                    st.markdown(response.text)
-                    
-                except Exception as e:
-                    error_msg = str(e)
-                    if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-                        st.error("⏳ Исчерпан дневной лимит бесплатных запросов для ЭТОГО ключа (20 запросов). Пожалуйста, вставьте СЛЕДУЮЩИЙ ключ слева!")
-                    elif "401" in error_msg or "UNAUTHENTICATED" in error_msg:
-                        st.error("❌ Ошибка авторизации: Этот API-ключ недействителен. Пожалуйста, перепроверьте его символы!")
-                    elif "400" in error_msg or "API_KEY_INVALID" in error_msg or "expired" in error_msg.lower():
-                        st.error("🔄 Срок действия этого API-ключа истек. Пожалуйста, сгенерируйте НОВЫЙ ключ в Google AI Studio и вставьте его слева!")
-                    elif "503" in error_msg or "UNAVAILABLE" in error_msg:
-                        st.error("🤖 Сервера Google сейчас сильно перегружены (ошибка 503). Подождите 1-2 минуты и нажмите кнопку анализа заново!")
-                    else:
-                        st.error(f"Произошла ошибка при вызове Gemini: {e}")
+                        sz_prompt_clean = str(sz_prompt).encode('utf-8', errors='ignore').decode('utf-8')
+                        
+                        response = client.models.generate_content(
+                            model='gemini-2.5-flash',
+                            contents=sz_prompt_clean,
+                            config={"system_instruction": sz_system_instruction, "temperature": 0.1}
+                        )
+                        
+                        st.success("🎯 Ответственный определен!")
+                        st.subheader("📋 Резолюция ИИ:")
+                        st.markdown(response.text)
+                        
+                    except Exception as e:
+                        st.error(f"Ошибка распределения: {e}")
