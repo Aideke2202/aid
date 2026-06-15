@@ -6,6 +6,13 @@ from docx import Document
 from pypdf import PdfReader
 import pandas as pd
 import io
+import sys
+
+# Принудительно настраиваем окружение на UTF-8 для защиты от ошибок кодировки
+import codecs
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
+    sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
 
 # Настройка страницы
 st.set_page_config(page_title="База знаний и Диспетчер ИИ", page_icon="🧠", layout="wide")
@@ -21,7 +28,6 @@ os.makedirs(DOCS_DIR, exist_ok=True)
 # --- ИНИЦИАЛИЗАЦИЯ GEMINI (СТРОГО ВРУЧНУЮ) ---
 st.sidebar.header("🔑 Настройки ИИ")
 
-# Чистое поле без подтягивания системных секретов
 api_key = st.sidebar.text_input(
     "Введите Gemini API Key:", 
     type="password", 
@@ -31,7 +37,6 @@ api_key = st.sidebar.text_input(
 client = None
 if api_key.strip():
     try:
-        # Инициализируем клиент строго по введенному вручную ключу
         client = genai.Client(api_key=api_key.strip())
     except Exception as e:
         st.sidebar.error(f"Ошибка инициализации ИИ: {e}")
@@ -173,39 +178,42 @@ if st.button("🔍 Запустить анализ базы знаний", type=
             for idx, file in enumerate(files, 1):
                 with open(os.path.join(DOCS_DIR, file), "r", encoding="utf-8") as f:
                     meta = json.load(f)
-                    all_docs_context += f"--- ДОКУМЕНТ №{idx} ---\nТип: {meta['type']}\nНазвание: {meta['title']}\nСодержимое:\n{meta['content']}\n\n"
+                    all_docs_context += f"--- DOCUMENT №{idx} ---\nType: {meta['type']}\nTitle: {meta['title']}\nContent:\n{meta['content']}\n\n"
         
         if not all_docs_context:
             st.error("Ошибка: База знаний пуста! Пожалуйста, сначала загрузите файлы в левой панели.")
         else:
             with st.spinner("Gemini штудирует базу данных, мануалы и таблицы..."):
                 try:
+                    # Оставляем инструкции на английском, чтобы внутренности библиотеки не ломали кодировку ASCII
                     system_instruction = (
-                        "Ты — суперинтеллектуальный аналитик и корпоративный помощник. В твоем распоряжении база знаний, "
-                        "состоящая из текстовых инструкций (Word/PDF) и структурированных таблиц (Excel).\n\n"
-                        "Твоя задача — внимательно изучить предоставленный контекст и ответить на запрос пользователя:\n"
-                        "1. Если вопрос касается ТАБЛИЦЫ/РЕЕСТРА (Excel): найди нужные строки, сопоставь данные и выдай точный "
-                        "аналитический ответ (например, кто дежурит, за кем закреплена задача, какой статус у документа).\n"
-                        "2. Если это ТЕХНИЧЕСКАЯ ОШИБКА: найди в мануалах пошаговый алгоритм исправления.\n"
-                        "3. Если это ПОРУЧЕНИЕ: определи исполнителя по должностным инструкциям.\n\n"
-                        "Отвечай строго по делу, опираясь только на факты из загруженных документов. Будь точен и лаконичен."
+                        "You are an AI assistant for corporate knowledge base analysis. "
+                        "Analyze the user's request using the provided context (memos, user manuals, Excel tables). "
+                        "Provide answers in Russian language based strictly on the provided documents. "
+                        "If it is a software error, give step-by-step instructions. "
+                        "If it is a task assignment, determine the responsible person based on job descriptions."
                     )
                     
-                    full_prompt = f"""Вот полная база загруженных документов, инструкций и таблиц вашего отдела:
+                    full_prompt = f"""Here is the corporate database:
 {all_docs_context}
 
 ---
-ЗАПРОС ПОЛЬЗОВАТЕЛЯ:
+USER REQUEST:
 "{user_query}"
 ---
 
-Используя данные выше, сформируй точный ответ. Если информация взята из таблицы Excel, укажи конкретные строки или листы.
+Provide a detailed, helpful answer in RUSSIAN language based ONLY on the data above.
 """
+                    # Делаем финальную очистку строки на всякий случай
+                    full_prompt_clean = str(full_prompt).encode('utf-8', errors='ignore').decode('utf-8')
                     
                     response = client.models.generate_content(
                         model='gemini-2.5-flash',
-                        contents=full_prompt,
-                        config={"system_instruction": system_instruction, "temperature": 0.2}
+                        contents=full_prompt_clean,
+                        config={
+                            "system_instruction": system_instruction, 
+                            "temperature": 0.2
+                        }
                     )
                     
                     st.success("🤖 Ответ сформирован!")
