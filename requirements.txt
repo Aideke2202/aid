@@ -1,5 +1,6 @@
 streamlit
 google-genai
+docx2txt
 python-docx
 pypdf
 pandas
