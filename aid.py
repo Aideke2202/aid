@@ -59,7 +59,42 @@ def parse_docx(file_bytes):
                     full_text.append(" | ".join(row_text))
         return "\n".join(full_text)
     except Exception as e:
-        return f"Ошибка при чтении файла Word: {e}"
+        # Если это старый .doc, замаскированный под .docx, пробуем вытащить из него текст напрямую
+        try:
+            text = file_bytes.decode('utf-8', errors='ignore')
+            # Очищаем бинарный мусор старого Word
+            clean_lines = [line.strip() for line in text.split('\n') if len(line.strip()) > 5]
+            if len(clean_lines) > 2:
+                return "\n".join(clean_lines)
+        except:
+            pass
+        return f"Ошибка при чтении файла Word (.docx): {e}. Если у вас старый формат (.doc), пожалуйста, пересохраните его как .docx через обычный Word."
+
+def parse_old_doc(file_bytes):
+    """Резервный парсер для старых файлов .doc (вытаскивает строки текста напрямую из бинарника)"""
+    try:
+        # Извлекаем печатные символы из бинарного файла .doc
+        text = ""
+        for b in file_bytes:
+            if 32 <= b <= 126 or 1040 <= b <= 1103 or b in [10, 13]: # ASCII + Кириллаца + перенос строки
+                if b in [10, 13]:
+                    text += "\n"
+                else:
+                    # Корректно декодируем байты кириллицы для старых кодировок Windows-1251
+                    try:
+                        text += bytes([b]).decode('cp1251', errors='ignore')
+                    except:
+                        text += chr(b)
+        
+        # Фильтруем системный мусор
+        lines = [line.strip() for line in text.split('\n') if len(line.strip()) > 3]
+        final_text = "\n".join(lines)
+        
+        if len(final_text.strip()) == 0:
+            return "Ошибка: Не удалось извлечь текст из старого .doc файла. Пересохраните его в .docx"
+        return final_text
+    except Exception as e:
+        return f"Ошибка при разборе старого Word (.doc): {e}"
 
 def parse_pdf(file_bytes):
     try:
@@ -103,8 +138,8 @@ with st.sidebar:
     doc_type = st.selectbox("Тип документа:", ["Должностная инструкция", "Инструкция к программе / Ошибка", "Таблица Excel / Реестр"])
     doc_title = st.text_input("Название (ФИО, программа или имя таблицы):")
     
-    # Расширили список принимаемых форматов
-    uploaded_file = st.file_uploader("Выложите файл (.docx, .pdf, .xlsx):", type=["docx", "pdf", "xlsx"])
+    # ТЕПЕРЬ ОФИЦИАЛЬНО РАЗРЕШИЛИ РАСШИРЕНИЕ 'doc' В ИНТЕРФЕЙСЕ
+    uploaded_file = st.file_uploader("Выложите файл (.docx, .doc, .pdf, .xlsx):", type=["docx", "doc", "pdf", "xlsx"])
     
     save_btn = st.button("💾 Сохранить в базу знаний", type="secondary")
     
@@ -114,6 +149,9 @@ with st.sidebar:
         
         if file_ext == "docx":
             parsed_text = parse_docx(file_bytes)
+        elif file_ext == "doc":
+            # Активируем резервный бинарный парсер кириллицы для старых вордовских файлов
+            parsed_text = parse_old_doc(file_bytes)
         elif file_ext == "pdf":
             parsed_text = parse_pdf(file_bytes)
         elif file_ext in ["xlsx", "xls"]:
@@ -121,7 +159,7 @@ with st.sidebar:
         else:
             parsed_text = "Неподдерживаемый формат файла."
         
-        if "Ошибка при чтении" in parsed_text:
+        if "Ошибка при чтении" in parsed_text or "Ошибка:" in parsed_text:
             st.error(parsed_text)
         else:
             clean_title = "".join(c for c in doc_title if c.isalnum() or c in "._- ")
