@@ -65,7 +65,7 @@ def parse_pdf(file_bytes):
     try:
         reader = PdfReader(io.BytesIO(file_bytes))
         full_text = []
-        # Считываем страницы ровно так, как они идут физически
+        # Точная разметка страниц для ИИ
         for idx, page in enumerate(reader.pages, 1):
             text = page.extract_text()
             if text:
@@ -79,16 +79,14 @@ def parse_excel(file_bytes):
         excel_file = pd.ExcelFile(io.BytesIO(file_bytes))
         full_text = []
         for sheet_name in excel_file.sheet_names:
-            # header=None отключает превращение первой строки в заголовки колонок. 
-            # Теперь отсчет строк идет честно, сверху вниз.
+            # header=None исключает сдвиги, строки считаются честно с самого верха файла
             df = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
             df = df.fillna("")
             if not df.empty:
                 full_text.append(f"--- Лист таблицы: {sheet_name} ---")
                 for idx, row in df.iterrows():
                     row_values = [str(val).strip() for val in row.values]
-                    # Так как мы убрали +1, ИИ видит точный физический индекс строки в Excel (начиная с 1-й строки файла)
-                    # Корректируем индекс для пользователя: idx + 1, чтобы совпадало со стандартной нумерацией строк Excel (1, 2, 3...)
+                    # idx + 1 возвращает физический номер строки, как на панели в самом Excel
                     full_text.append(f"Строка Excel {idx+1}: " + " | ".join(row_values))
         return "\n".join(full_text)
     except Exception as e:
@@ -121,7 +119,11 @@ with st.sidebar:
         if "Ошибка при чтении" in parsed_text:
             st.error(parsed_text)
         else:
-            filename = f"{doc_type.replace(' ', '_')}_{doc_title.replace(' ', '_')}.json"
+            # ЗАЩИТА ОТ FILE NOT FOUND: Очищаем название от знаков вроде / \ : ? которые ломают пути Linux
+            clean_title = "".join(c for c in doc_title if c.isalnum() or c in "._- ")
+            clean_type = doc_type.replace(' ', '_')
+            
+            filename = f"{clean_type}_{clean_title.replace(' ', '_')}.json"
             filepath = os.path.join(DOCS_DIR, filename)
             
             data = {
@@ -129,6 +131,9 @@ with st.sidebar:
                 "title": doc_title,
                 "content": parsed_text
             }
+            
+            # Принудительно создаем структуру папок перед самой записью
+            os.makedirs(DOCS_DIR, exist_ok=True)
             
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=4)
@@ -181,7 +186,7 @@ if st.button("🔍 Запустить анализ базы знаний", type=
             for file in files:
                 with open(os.path.join(DOCS_DIR, file), "r", encoding="utf-8") as f:
                     meta = json.load(f)
-                    # Убрали искусственную нумерацию ДОКУМЕНТ №X, чтобы ИИ не путал ее с номерами страниц внутри файлов
+                    # Чистый контекст без лишней нумерации, путающей ИИ
                     all_docs_context += f"--- НАЧАЛО ДОКУМЕНТА: {meta['title']} ({meta['type']}) ---\n{meta['content']}\n--- КОНЕЦ ДОКУМЕНТА ---\n\n"
         
         if not all_docs_context:
@@ -189,6 +194,7 @@ if st.button("🔍 Запустить анализ базы знаний", type=
         else:
             with st.spinner("Gemini штудирует базу данных, мануалы и таблицы..."):
                 try:
+                    # Инструкции на английском защищают ASCII заголовки библиотеки от падения
                     system_instruction = (
                         "You are an AI assistant for corporate knowledge base analysis. "
                         "Analyze the user's request using the provided context (memos, user manuals, Excel tables). "
@@ -208,6 +214,7 @@ USER REQUEST:
 
 Provide a detailed, helpful answer in RUSSIAN language based ONLY on the data above.
 """
+                    # Принудительное кодирование строки в UTF-8 для защиты от ошибок кодировки
                     full_prompt_clean = str(full_prompt).encode('utf-8', errors='ignore').decode('utf-8')
                     
                     response = client.models.generate_content(
@@ -215,7 +222,7 @@ Provide a detailed, helpful answer in RUSSIAN language based ONLY on the data ab
                         contents=full_prompt_clean,
                         config={
                             "system_instruction": system_instruction, 
-                            "temperature": 0.1  # Снизили температуру до 0.1 для максимальной точности в цифрах
+                            "temperature": 0.1  # Низкая температура для максимальной точности без фантазий
                         }
                     )
                     
