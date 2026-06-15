@@ -65,10 +65,11 @@ def parse_pdf(file_bytes):
     try:
         reader = PdfReader(io.BytesIO(file_bytes))
         full_text = []
-        for page in reader.pages:
+        # Считываем страницы ровно так, как они идут физически
+        for idx, page in enumerate(reader.pages, 1):
             text = page.extract_text()
             if text:
-                full_text.append(text)
+                full_text.append(f"[Страница {idx}]\n{text}")
         return "\n".join(full_text)
     except Exception as e:
         return f"Ошибка при чтении файла PDF: {e}"
@@ -78,15 +79,17 @@ def parse_excel(file_bytes):
         excel_file = pd.ExcelFile(io.BytesIO(file_bytes))
         full_text = []
         for sheet_name in excel_file.sheet_names:
-            df = pd.read_excel(excel_file, sheet_name=sheet_name)
+            # header=None отключает превращение первой строки в заголовки колонок. 
+            # Теперь отсчет строк идет честно, сверху вниз.
+            df = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
             df = df.fillna("")
             if not df.empty:
                 full_text.append(f"--- Лист таблицы: {sheet_name} ---")
-                headers = " | ".join(df.columns.astype(str))
-                full_text.append(f"Колонки: {headers}")
                 for idx, row in df.iterrows():
                     row_values = [str(val).strip() for val in row.values]
-                    full_text.append(f"Строка {idx+1}: " + " | ".join(row_values))
+                    # Так как мы убрали +1, ИИ видит точный физический индекс строки в Excel (начиная с 1-й строки файла)
+                    # Корректируем индекс для пользователя: idx + 1, чтобы совпадало со стандартной нумерацией строк Excel (1, 2, 3...)
+                    full_text.append(f"Строка Excel {idx+1}: " + " | ".join(row_values))
         return "\n".join(full_text)
     except Exception as e:
         return f"Ошибка при чтении файла Excel: {e}"
@@ -175,23 +178,24 @@ if st.button("🔍 Запустить анализ базы знаний", type=
         all_docs_context = ""
         if os.path.exists(DOCS_DIR):
             files = [f for f in os.listdir(DOCS_DIR) if f.endswith('.json')]
-            for idx, file in enumerate(files, 1):
+            for file in files:
                 with open(os.path.join(DOCS_DIR, file), "r", encoding="utf-8") as f:
                     meta = json.load(f)
-                    all_docs_context += f"--- DOCUMENT №{idx} ---\nType: {meta['type']}\nTitle: {meta['title']}\nContent:\n{meta['content']}\n\n"
+                    # Убрали искусственную нумерацию ДОКУМЕНТ №X, чтобы ИИ не путал ее с номерами страниц внутри файлов
+                    all_docs_context += f"--- НАЧАЛО ДОКУМЕНТА: {meta['title']} ({meta['type']}) ---\n{meta['content']}\n--- КОНЕЦ ДОКУМЕНТА ---\n\n"
         
         if not all_docs_context:
             st.error("Ошибка: База знаний пуста! Пожалуйста, сначала загрузите файлы в левой панели.")
         else:
             with st.spinner("Gemini штудирует базу данных, мануалы и таблицы..."):
                 try:
-                    # Оставляем инструкции на английском, чтобы внутренности библиотеки не ломали кодировку ASCII
                     system_instruction = (
                         "You are an AI assistant for corporate knowledge base analysis. "
                         "Analyze the user's request using the provided context (memos, user manuals, Excel tables). "
                         "Provide answers in Russian language based strictly on the provided documents. "
-                        "If it is a software error, give step-by-step instructions. "
-                        "If it is a task assignment, determine the responsible person based on job descriptions."
+                        "When referencing Excel tables, use the exact row numbers provided in the text (e.g., 'Строка Excel X'). "
+                        "When referencing PDF files, use the exact page numbers tags provided (e.g., '[Страница X]'). "
+                        "Do not add or subtract any numbers. Be extremely precise and concise."
                     )
                     
                     full_prompt = f"""Here is the corporate database:
@@ -204,7 +208,6 @@ USER REQUEST:
 
 Provide a detailed, helpful answer in RUSSIAN language based ONLY on the data above.
 """
-                    # Делаем финальную очистку строки на всякий случай
                     full_prompt_clean = str(full_prompt).encode('utf-8', errors='ignore').decode('utf-8')
                     
                     response = client.models.generate_content(
@@ -212,7 +215,7 @@ Provide a detailed, helpful answer in RUSSIAN language based ONLY on the data ab
                         contents=full_prompt_clean,
                         config={
                             "system_instruction": system_instruction, 
-                            "temperature": 0.2
+                            "temperature": 0.1  # Снизили температуру до 0.1 для максимальной точности в цифрах
                         }
                     )
                     
@@ -228,5 +231,7 @@ Provide a detailed, helpful answer in RUSSIAN language based ONLY on the data ab
                         st.error("❌ Ошибка авторизации: Этот API-ключ недействителен. Пожалуйста, перепроверьте его символы!")
                     elif "400" in error_msg or "API_KEY_INVALID" in error_msg or "expired" in error_msg.lower():
                         st.error("🔄 Срок действия этого API-ключа истек. Пожалуйста, сгенерируйте НОВЫЙ ключ в Google AI Studio и вставьте его слева!")
+                    elif "503" in error_msg or "UNAVAILABLE" in error_msg:
+                        st.error("🤖 Сервера Google сейчас сильно перегружены (ошибка 503). Подождите 1-2 минуты и нажмите кнопку анализа заново!")
                     else:
                         st.error(f"Произошла ошибка при вызове Gemini: {e}")
