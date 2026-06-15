@@ -102,6 +102,8 @@ with st.sidebar:
     
     doc_type = st.selectbox("Тип документа:", ["Должностная инструкция", "Инструкция к программе / Ошибка", "Таблица Excel / Реестр"])
     doc_title = st.text_input("Название (ФИО, программа или имя таблицы):")
+    
+    # Расширили список принимаемых форматов
     uploaded_file = st.file_uploader("Выложите файл (.docx, .pdf, .xlsx):", type=["docx", "pdf", "xlsx"])
     
     save_btn = st.button("💾 Сохранить в базу знаний", type="secondary")
@@ -226,7 +228,6 @@ with tab2:
         elif not sz_text.strip():
             st.warning("Пожалуйста, вставьте текст служебной записки.")
         else:
-            # Собираем строго должностные инструкции
             di_context = ""
             if os.path.exists(DOCS_DIR):
                 files = [f for f in os.listdir(DOCS_DIR) if f.endswith('.json')]
@@ -237,11 +238,10 @@ with tab2:
                             di_context += f"--- ДОЛЖНОСТНАЯ ИНСТРУКЦИЯ СОТРУДНИКА: {meta['title']} ---\n{meta['content']}\n\n"
             
             if not di_context:
-                st.error("Ошибка: В базе знаний нет ни одной Должностной инструкции! Пожалуйста, загрузите ДИ сотрудников в левой панели (выбрав тип 'Должностная инструкция').")
+                st.error("Ошибка: В базе знаний нет ни одной Должностной инструкции! Пожалуйста, загрузите ДИ сотрудников в левой панели.")
             else:
                 with st.spinner("Джамиля сопоставляет СЗ с должностными инструкциями..."):
                     try:
-                        # Жесткая инструкция для ИИ выступать в роли диспетчера
                         sz_system_instruction = (
                             "You are an automated corporate task dispatcher. "
                             "Your job is to read an incoming service note (СЗ) and compare it with the provided job descriptions (Должностные инструкции). "
